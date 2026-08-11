@@ -4,9 +4,10 @@ import pandas as pd
 st.title("孔压比 $r_u$ 计算平台")
 
 st.write(
-    "输入土层信息、地下水位和孔压参数，"
-    "自动计算初始应力及超孔隙水压力比。"
+    "输入土层信息、地下水位和孔压计埋深，"
+    "上传动态孔压CSV数据，自动计算孔压比时程。"
 )
+
 
 # =====================================================
 # 1. 土层信息
@@ -71,7 +72,7 @@ for _, row in layers.iterrows():
         row["饱和重度_kN_m3"]
     )
 
-    # 传感器以上才参与计算
+    # 只计算孔压计以上的土层
     if top >= sensor_depth:
         continue
 
@@ -83,10 +84,7 @@ for _, row in layers.iterrows():
     if effective_bottom <= top:
         continue
 
-    # ---------------------------------
     # 地下水位以上部分
-    # ---------------------------------
-
     above_bottom = min(
         effective_bottom,
         water_depth
@@ -103,10 +101,7 @@ for _, row in layers.iterrows():
             * thickness_above
         )
 
-    # ---------------------------------
     # 地下水位以下部分
-    # ---------------------------------
-
     below_top = max(
         top,
         water_depth
@@ -126,7 +121,7 @@ for _, row in layers.iterrows():
 
 
 # =====================================================
-# 4. 自动计算初始孔压
+# 4. 初始孔压
 # =====================================================
 
 if sensor_depth > water_depth:
@@ -147,103 +142,302 @@ else:
 sigma_eff0 = sigma_v0 - u0
 
 
-# =====================================================
-# 显示初始状态
-# =====================================================
-
 st.subheader("自动计算得到")
 
-st.write(
-    f"初始总应力 σv0 = "
+col1, col2, col3 = st.columns(3)
+
+col1.metric(
+    "初始总应力 σv0",
     f"{sigma_v0:.2f} kPa"
 )
 
-st.write(
-    f"初始孔隙水压力 u0 = "
+col2.metric(
+    "初始孔压 u0",
     f"{u0:.2f} kPa"
 )
 
-st.write(
-    f"初始有效应力 σ′v0 = "
+col3.metric(
+    "初始有效应力 σ′v0",
     f"{sigma_eff0:.2f} kPa"
 )
 
 
 # =====================================================
-# 6. 当前孔压
+# 6. 上传CSV
 # =====================================================
 
-st.header("3. 当前孔隙水压力")
+st.header("3. 上传动态孔压数据")
 
-u = st.number_input(
-    "当前孔隙水压力 u(t)（kPa）",
-    min_value=0.0,
-    value=80.0,
-    step=0.1
+st.write(
+    "CSV文件必须包含两列："
+    "`time_s` 和 `pressure_kpa`。"
+)
+
+uploaded_file = st.file_uploader(
+    "选择CSV文件",
+    type=["csv"]
 )
 
 
 # =====================================================
-# 7. ru计算
+# 7. 读取并计算
 # =====================================================
 
-delta_u = u - u0
+if uploaded_file is not None:
 
-st.header("4. 计算结果")
+    try:
 
-if sigma_eff0 > 0:
+        data = pd.read_csv(uploaded_file)
 
-    ru = delta_u / sigma_eff0
+    except Exception as e:
 
-    current_sigma_eff = (
-        sigma_eff0 - delta_u
+        st.error(
+            f"CSV读取失败：{e}"
+        )
+
+        st.stop()
+
+
+    # 检查列名
+    required_columns = [
+        "time_s",
+        "pressure_kpa"
+    ]
+
+    if not all(
+        col in data.columns
+        for col in required_columns
+    ):
+
+        st.error(
+            "CSV必须包含 time_s 和 pressure_kpa 两列。"
+        )
+
+        st.stop()
+
+
+    # 转换为数字
+    data["time_s"] = pd.to_numeric(
+        data["time_s"],
+        errors="coerce"
+    )
+
+    data["pressure_kpa"] = pd.to_numeric(
+        data["pressure_kpa"],
+        errors="coerce"
+    )
+
+    # 删除无效行
+    data = data.dropna(
+        subset=[
+            "time_s",
+            "pressure_kpa"
+        ]
+    )
+
+
+    if len(data) == 0:
+
+        st.error(
+            "CSV中没有可用的数字数据。"
+        )
+
+        st.stop()
+
+
+    # =================================================
+    # 8. 计算超孔压
+    # =================================================
+
+    data["delta_u_kpa"] = (
+        data["pressure_kpa"]
+        - u0
+    )
+
+
+    # =================================================
+    # 9. 计算ru
+    # =================================================
+
+    if sigma_eff0 <= 0:
+
+        st.error(
+            "初始有效应力≤0，"
+            "请检查土层、地下水位和孔压计埋深。"
+        )
+
+        st.stop()
+
+
+    data["ru"] = (
+        data["delta_u_kpa"]
+        / sigma_eff0
+    )
+
+
+    # =================================================
+    # 10. 当前有效应力
+    # =================================================
+
+    data["sigma_eff_kpa"] = (
+        sigma_eff0
+        - data["delta_u_kpa"]
+    )
+
+
+    # =================================================
+    # 11. 统计结果
+    # =================================================
+
+    delta_u_max = (
+        data["delta_u_kpa"].max()
+    )
+
+    ru_max = (
+        data["ru"].max()
+    )
+
+    sigma_eff_min = (
+        data["sigma_eff_kpa"].min()
+    )
+
+    max_index = data["ru"].idxmax()
+
+    t_ru_max = data.loc[
+        max_index,
+        "time_s"
+    ]
+
+
+    # =================================================
+    # 12. 显示结果
+    # =================================================
+
+    st.header("4. 计算结果")
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric(
+        "最大超孔压 Δu",
+        f"{delta_u_max:.2f} kPa"
+    )
+
+    c2.metric(
+        "最大孔压比 ru",
+        f"{ru_max:.3f}"
+    )
+
+    c3.metric(
+        "最小有效应力",
+        f"{sigma_eff_min:.2f} kPa"
     )
 
     st.write(
-        f"超孔隙水压力 Δu = "
-        f"{delta_u:.2f} kPa"
-    )
-
-    st.write(
-        f"孔压比 ru = "
-        f"{ru:.3f}"
-    )
-
-    st.write(
-        f"当前有效应力 σ′v(t) = "
-        f"{current_sigma_eff:.2f} kPa"
-    )
-
-else:
-
-    st.error(
-        "初始有效应力 ≤ 0，"
-        "请检查土层参数、地下水位或孔压计深度。"
+        f"最大孔压比出现时间："
+        f"{t_ru_max:.3f} s"
     )
 
 
-# =====================================================
-# 8. 提示
-# =====================================================
+    # =================================================
+    # 13. ru时程图
+    # =================================================
+
+    st.subheader("孔压比 $r_u$ 时程")
+
+    chart_data = (
+        data[
+            ["time_s", "ru"]
+        ]
+        .set_index("time_s")
+    )
+
+    st.line_chart(
+        chart_data
+    )
+
+
+    # =================================================
+    # 14. 超孔压时程图
+    # =================================================
+
+    st.subheader("超孔隙水压力 Δu 时程")
+
+    delta_u_chart = (
+        data[
+            ["time_s", "delta_u_kpa"]
+        ]
+        .set_index("time_s")
+    )
+
+    st.line_chart(
+        delta_u_chart
+    )
+
+
+    # =================================================
+    # 15. 有效应力时程图
+    # =================================================
+
+    st.subheader("有效应力时程")
+
+    sigma_chart = (
+        data[
+            ["time_s", "sigma_eff_kpa"]
+        ]
+        .set_index("time_s")
+    )
+
+    st.line_chart(
+        sigma_chart
+    )
+
+
+    # =================================================
+    # 16. 完整结果表
+    # =================================================
+
+    st.subheader("完整计算结果")
+
+    st.dataframe(
+        data,
+        use_container_width=True
+    )
+
+
+    # =================================================
+    # 17. 下载结果
+    # =================================================
+
+    result_csv = (
+        data
+        .to_csv(index=False)
+        .encode("utf-8-sig")
+    )
+
+    st.download_button(
+        "下载计算结果CSV",
+        result_csv,
+        file_name="ru_calculation_results.csv",
+        mime="text/csv"
+    )
+
+
+    # =================================================
+    # 18. 警告
+    # =================================================
+
+    if ru_max > 1.0:
+
+        st.warning(
+            "检测到 ru > 1。"
+            "请检查孔压基线、地下水位、"
+            "土层参数以及动态孔压中是否存在异常尖峰。"
+        )
+
 
 if sensor_depth <= water_depth:
 
     st.warning(
-        "当前孔压计位于地下水位以上或水位位置。"
+        "孔压计位于地下水位以上或水位附近，"
         "传统饱和土孔压比 ru 的物理意义需要谨慎判断。"
-    )
-
-if sigma_eff0 > 0:
-
-    if ru > 1.0:
-
-        st.warning(
-            "当前计算得到 ru > 1。"
-            "请检查孔压数据、地下水位、土层参数，"
-            "或是否存在额外总应力变化。"
-        )
-else:
-
-    st.error(
-        "初始有效应力必须大于0，请检查土层或孔压参数。"
     )
